@@ -4,8 +4,9 @@ console.log("Deno Nebius Proxy Server Started ✅");
 class APIKeyManager {
   private apiKeys: string[] = [];
   private keyUsageCount = new Map<string, number>();
-  private keyLastUsed = new Map<string, number>();
   private loadError: string | null = null;
+  // 🌟 新增：用于记录当前轮询位置的索引
+  private currentIndex: number = 0;
 
   constructor() {
     this.loadKeysFromEnv();
@@ -81,16 +82,17 @@ class APIKeyManager {
     // 初始化使用计数
     this.apiKeys.forEach(key => {
       this.keyUsageCount.set(key, 0);
-      this.keyLastUsed.set(key, 0);
     });
+
+    // 🌟 核心修改：冷启动时，根据当前时间戳初始化一个随机的起始轮询索引
+    this.currentIndex = Date.now() % this.apiKeys.length;
+    console.log(`🎲 冷启动初始化完毕，基于时间戳的初始轮询索引为: ${this.currentIndex}`);
   }
 
   /**
-   * 验证 API Key 格式 (已修正)
+   * 验证 API Key 格式
    */
   private isValidAPIKey(key: string): boolean {
-    // 修正：Nebius Key 是 JWT 格式，包含点号 (.)
-    // 只要长度足够且不包含空字符即可，不做严格正则验证以免误杀
     return key.length > 20 && !key.includes(" ");
   }
 
@@ -102,37 +104,23 @@ class APIKeyManager {
     return this.loadError;
   }
 
+  // 🌟 核心修改：改为简单的轮询机制
   getNextAPIKey(): string {
     if (!this.hasValidKeys()) {
       throw new Error('No valid API keys available');
     }
 
-    const now = Date.now();
+    // 取出当前的 Key
+    const selectedKey = this.apiKeys[this.currentIndex];
     
-    // 清理过期的使用记录（1小时前）
-    this.keyUsageCount.forEach((count, key) => {
-      const lastUsed = this.keyLastUsed.get(key) || 0;
-      if (now - lastUsed > 60 * 60 * 1000) {
-        this.keyUsageCount.set(key, 0);
-      }
-    });
+    // 更新使用计数（保留用于状态页面展示）
+    const currentUsage = this.keyUsageCount.get(selectedKey) || 0;
+    this.keyUsageCount.set(selectedKey, currentUsage + 1);
 
-    // 找到使用次数最少的 key
-    let bestKey = this.apiKeys[0];
-    let minUsage = this.keyUsageCount.get(bestKey) || 0;
-    
-    for (const key of this.apiKeys) {
-      const usage = this.keyUsageCount.get(key) || 0;
-      if (usage < minUsage) {
-        minUsage = usage;
-        bestKey = key;
-      }
-    }
+    // 索引加 1，如果超过数组长度则绕回 0 (轮询逻辑)
+    this.currentIndex = (this.currentIndex + 1) % this.apiKeys.length;
 
-    this.keyUsageCount.set(bestKey, minUsage + 1);
-    this.keyLastUsed.set(bestKey, now);
-
-    return bestKey;
+    return selectedKey;
   }
 
   getPublicKeyStatus(): { total: number; usage: number[]; error?: string; hasKeys: boolean } {
@@ -237,7 +225,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   if (pathname === '/status') {
     return jsonResponse({
       service: "Nebius Proxy Server",
-      version: "1.1.0",
+      version: "1.2.0",
       uptime: Date.now() - stats.startTime,
       stats,
       keyStatus: keyManager.getPublicKeyStatus(),
